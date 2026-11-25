@@ -60,6 +60,12 @@ class NowPlayingListener : NotificationListenerService() {
         MediaState.cover = md?.getBitmap(MediaMetadata.METADATA_KEY_ALBUM_ART)
             ?: md?.getBitmap(MediaMetadata.METADATA_KEY_ART)
         MediaState.durationMs = md?.getLong(MediaMetadata.METADATA_KEY_DURATION) ?: 0L
+        val uris = listOfNotNull(
+            md?.getString(MediaMetadata.METADATA_KEY_ALBUM_ART_URI),
+            md?.getString(MediaMetadata.METADATA_KEY_ART_URI),
+            md?.getString(MediaMetadata.METADATA_KEY_DISPLAY_ICON_URI)
+        ).filter { it.isNotBlank() }
+        MediaState.loadCover(applicationContext, uris, MediaState.title, MediaState.artist)
         MediaState.loadLyrics()
     }
 }
