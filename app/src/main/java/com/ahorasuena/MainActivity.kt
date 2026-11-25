@@ -70,6 +70,7 @@ import kotlin.math.abs
 import kotlin.math.cos
 import kotlin.math.roundToInt
 import kotlin.math.sin
+import kotlin.math.sqrt
 
 val LocalK = compositionLocalOf { 1f }
 
@@ -122,45 +123,53 @@ fun Modifier.fadeBottom(): Modifier = this
 data class Palette(val base: Color, val blobs: List<Color>)
 
 fun paletteFrom(src: Bitmap): Palette {
-    val mid = Bitmap.createScaledBitmap(src, 128, 128, true)
-    val small = Bitmap.createScaledBitmap(mid, 16, 16, true)
+    val mid = Bitmap.createScaledBitmap(src, 160, 160, true)
+    val size = 48
+    val small = Bitmap.createScaledBitmap(mid, size, size, true)
+    val pixels = IntArray(size * size)
+    small.getPixels(pixels, 0, size, 0, 0, size, size)
+
     val hsv = FloatArray(3)
-
-    fun avg(x0: Int, x1: Int, y0: Int, y1: Int): Int {
-        var r = 0
-        var g = 0
-        var b = 0
-        var n = 0
-        for (y in y0 until y1) {
-            for (x in x0 until x1) {
-                val c = small.getPixel(x, y)
-                r += android.graphics.Color.red(c)
-                g += android.graphics.Color.green(c)
-                b += android.graphics.Color.blue(c)
-                n++
-            }
-        }
-        return android.graphics.Color.rgb(r / n, g / n, b / n)
-    }
-
-    fun tune(c: Int, sMul: Float, vMin: Float, vMax: Float): Color {
+    val weight = FloatArray(512)
+    val sumR = FloatArray(512)
+    val sumG = FloatArray(512)
+    val sumB = FloatArray(512)
+    for (c in pixels) {
+        val r = android.graphics.Color.red(c)
+        val g = android.graphics.Color.green(c)
+        val b = android.graphics.Color.blue(c)
         android.graphics.Color.colorToHSV(c, hsv)
-        hsv[1] = (hsv[1] * sMul).coerceAtMost(1f)
-        hsv[2] = hsv[2].coerceIn(vMin, vMax)
-        return Color(android.graphics.Color.HSVToColor(hsv))
+        val w = 1f + hsv[1]
+        val idx = ((r shr 5) shl 6) or ((g shr 5) shl 3) or (b shr 5)
+        weight[idx] += w
+        sumR[idx] += r * w
+        sumG[idx] += g * w
+        sumB[idx] += b * w
     }
 
-    val all = avg(0, 16, 0, 16)
-    return Palette(
-        base = tune(all, 1.1f, 0.2f, 0.7f),
-        blobs = listOf(
-            tune(avg(0, 8, 0, 8), 1.4f, 0.4f, 1f),
-            tune(avg(8, 16, 0, 8), 1.4f, 0.4f, 1f),
-            tune(avg(0, 8, 8, 16), 1.4f, 0.4f, 1f),
-            tune(avg(8, 16, 8, 16), 1.4f, 0.4f, 1f),
-            tune(all, 1.5f, 0.45f, 1f)
-        )
-    )
+    val order = (0 until 512).filter { weight[it] > 0f }.sortedByDescending { weight[it] }
+    val picked = mutableListOf<FloatArray>()
+
+    fun far(rgb: FloatArray, minDist: Float): Boolean = picked.none {
+        val dr = it[0] - rgb[0]
+        val dg = it[1] - rgb[1]
+        val db = it[2] - rgb[2]
+        sqrt(dr * dr + dg * dg + db * db) < minDist
+    }
+
+    for (minDist in listOf(80f, 45f, 20f)) {
+        for (idx in order) {
+            if (picked.size >= 5) break
+            val w = weight[idx]
+            val rgb = floatArrayOf(sumR[idx] / w, sumG[idx] / w, sumB[idx] / w)
+            if (far(rgb, minDist)) picked.add(rgb)
+        }
+    }
+
+    val colors = picked.map { Color(it[0] / 255f, it[1] / 255f, it[2] / 255f) }
+    val base = colors.first()
+    val blobs = List(5) { colors[(it + 1) % colors.size] }
+    return Palette(base, blobs)
 }
 
 @Composable
@@ -211,7 +220,7 @@ fun CoverBackground(content: @Composable BoxScope.() -> Unit) {
                 )
             }
         }
-        Box(Modifier.fillMaxSize().background(Color.Black.copy(alpha = 0.18f)))
+        Box(Modifier.fillMaxSize().background(Color.Black.copy(alpha = 0.1f)))
         content()
     }
 }
