@@ -9,10 +9,15 @@ import android.provider.Settings
 import android.view.WindowManager
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
-import androidx.compose.animation.Crossfade
 import androidx.compose.animation.animateColorAsState
+import androidx.compose.animation.core.LinearEasing
 import androidx.compose.animation.core.animateDpAsState
+import androidx.compose.animation.core.animateFloat
+import androidx.compose.animation.core.animateFloatAsState
+import androidx.compose.animation.core.infiniteRepeatable
+import androidx.compose.animation.core.rememberInfiniteTransition
 import androidx.compose.animation.core.tween
+import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
@@ -38,20 +43,19 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.blur
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.draw.drawWithContent
+import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.BlendMode
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
-import androidx.compose.ui.graphics.ColorFilter
-import androidx.compose.ui.graphics.ColorMatrix
 import androidx.compose.ui.graphics.CompositingStrategy
 import androidx.compose.ui.graphics.FilterQuality
+import androidx.compose.ui.graphics.TransformOrigin
 import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.layout.onSizeChanged
 import androidx.compose.ui.platform.LocalContext
-import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
@@ -61,10 +65,12 @@ import androidx.compose.ui.unit.TextUnit
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import kotlinx.coroutines.delay
+import kotlin.math.PI
 import kotlin.math.abs
+import kotlin.math.cos
 import kotlin.math.roundToInt
+import kotlin.math.sin
 
-val Serif = FontFamily.Serif
 val LocalK = compositionLocalOf { 1f }
 
 @Composable
@@ -99,62 +105,113 @@ class MainActivity : ComponentActivity() {
     }
 }
 
-fun Modifier.fadeVertical(): Modifier = this
+fun Modifier.fadeBottom(): Modifier = this
     .graphicsLayer { compositingStrategy = CompositingStrategy.Offscreen }
     .drawWithContent {
         drawContent()
         drawRect(
             brush = Brush.verticalGradient(
-                0f to Color.Transparent,
-                0.14f to Color.Black,
-                0.86f to Color.Black,
+                0f to Color.Black,
+                0.8f to Color.Black,
                 1f to Color.Transparent
             ),
             blendMode = BlendMode.DstIn
         )
     }
 
-data class BgInfo(val bmp: Bitmap, val lum: Float)
+data class Palette(val base: Color, val blobs: List<Color>)
+
+fun paletteFrom(src: Bitmap): Palette {
+    val mid = Bitmap.createScaledBitmap(src, 128, 128, true)
+    val small = Bitmap.createScaledBitmap(mid, 16, 16, true)
+    val hsv = FloatArray(3)
+
+    fun avg(x0: Int, x1: Int, y0: Int, y1: Int): Int {
+        var r = 0
+        var g = 0
+        var b = 0
+        var n = 0
+        for (y in y0 until y1) {
+            for (x in x0 until x1) {
+                val c = small.getPixel(x, y)
+                r += android.graphics.Color.red(c)
+                g += android.graphics.Color.green(c)
+                b += android.graphics.Color.blue(c)
+                n++
+            }
+        }
+        return android.graphics.Color.rgb(r / n, g / n, b / n)
+    }
+
+    fun tune(c: Int, sMul: Float, vMin: Float, vMax: Float): Color {
+        android.graphics.Color.colorToHSV(c, hsv)
+        hsv[1] = (hsv[1] * sMul).coerceAtMost(1f)
+        hsv[2] = hsv[2].coerceIn(vMin, vMax)
+        return Color(android.graphics.Color.HSVToColor(hsv))
+    }
+
+    val all = avg(0, 16, 0, 16)
+    return Palette(
+        base = tune(all, 1.1f, 0.2f, 0.7f),
+        blobs = listOf(
+            tune(avg(0, 8, 0, 8), 1.4f, 0.4f, 1f),
+            tune(avg(8, 16, 0, 8), 1.4f, 0.4f, 1f),
+            tune(avg(0, 8, 8, 16), 1.4f, 0.4f, 1f),
+            tune(avg(8, 16, 8, 16), 1.4f, 0.4f, 1f),
+            tune(all, 1.5f, 0.45f, 1f)
+        )
+    )
+}
 
 @Composable
 fun CoverBackground(content: @Composable BoxScope.() -> Unit) {
     val cover = MediaState.hiCover ?: MediaState.cover
-    val info = remember(cover) {
-        cover?.let {
-            val mid = Bitmap.createScaledBitmap(it, 160, 160, true)
-            val small = Bitmap.createScaledBitmap(mid, 24, 24, true)
-            val pixels = IntArray(24 * 24)
-            small.getPixels(pixels, 0, 24, 0, 0, 24, 24)
-            var sum = 0f
-            for (c in pixels) {
-                val r = (c shr 16) and 0xFF
-                val g = (c shr 8) and 0xFF
-                val b = c and 0xFF
-                sum += (0.299f * r + 0.587f * g + 0.114f * b) / 255f
-            }
-            BgInfo(small, sum / pixels.size)
-        }
-    }
+    val palette = remember(cover) { cover?.let { paletteFrom(it) } }
+
+    val spec = tween<Color>(1500)
+    val base by animateColorAsState(palette?.base ?: Color(0xFF111111), spec, label = "base")
+    val c0 by animateColorAsState(palette?.blobs?.get(0) ?: Color(0xFF222222), spec, label = "c0")
+    val c1 by animateColorAsState(palette?.blobs?.get(1) ?: Color(0xFF222222), spec, label = "c1")
+    val c2 by animateColorAsState(palette?.blobs?.get(2) ?: Color(0xFF222222), spec, label = "c2")
+    val c3 by animateColorAsState(palette?.blobs?.get(3) ?: Color(0xFF222222), spec, label = "c3")
+    val c4 by animateColorAsState(palette?.blobs?.get(4) ?: Color(0xFF222222), spec, label = "c4")
+
+    val infinite = rememberInfiniteTransition(label = "bgMotion")
+    val phase by infinite.animateFloat(
+        initialValue = 0f,
+        targetValue = (2 * PI).toFloat(),
+        animationSpec = infiniteRepeatable(tween(32000, easing = LinearEasing)),
+        label = "phase"
+    )
+
     Box(Modifier.fillMaxSize().background(Color.Black)) {
-        Crossfade(targetState = info, animationSpec = tween(900), label = "bg") { bg ->
-            if (bg != null) {
-                Box(Modifier.fillMaxSize()) {
-                    Image(
-                        bitmap = bg.bmp.asImageBitmap(),
-                        contentDescription = null,
-                        modifier = Modifier.fillMaxSize().blur(40.dp),
-                        contentScale = ContentScale.Crop,
-                        colorFilter = ColorFilter.colorMatrix(ColorMatrix().apply { setToSaturation(1.5f) }),
-                        filterQuality = FilterQuality.Medium
-                    )
-                    Box(
-                        Modifier.fillMaxSize().background(
-                            Color.Black.copy(alpha = (0.08f + 0.3f * bg.lum).coerceIn(0.08f, 0.4f))
-                        )
-                    )
-                }
+        Canvas(Modifier.fillMaxSize()) {
+            drawRect(base)
+            val w = size.width
+            val h = size.height
+            val r = maxOf(w, h) * 0.6f
+            val p = phase
+            val cols = listOf(c0, c1, c2, c3, c4)
+            val centers = listOf(
+                Offset(w * (0.2f + 0.12f * sin(p)), h * (0.2f + 0.15f * cos(p * 2f))),
+                Offset(w * (0.8f + 0.12f * cos(p)), h * (0.2f + 0.15f * sin(p * 2f))),
+                Offset(w * (0.2f + 0.15f * sin(p * 2f + 1f)), h * (0.8f + 0.12f * cos(p))),
+                Offset(w * (0.8f + 0.10f * cos(p * 3f + 2f)), h * (0.8f + 0.12f * sin(p))),
+                Offset(w * (0.5f + 0.20f * sin(p)), h * (0.5f + 0.20f * cos(p * 3f)))
+            )
+            for (i in cols.indices) {
+                drawCircle(
+                    brush = Brush.radialGradient(
+                        listOf(cols[i].copy(alpha = 0.95f), cols[i].copy(alpha = 0f)),
+                        center = centers[i],
+                        radius = r
+                    ),
+                    radius = r,
+                    center = centers[i]
+                )
             }
         }
+        Box(Modifier.fillMaxSize().background(Color.Black.copy(alpha = 0.18f)))
         content()
     }
 }
@@ -196,10 +253,6 @@ fun NowPlayingScreen() {
                     verticalAlignment = Alignment.CenterVertically
                 ) {
                     PlayerPane(Modifier.weight(1f).fillMaxHeight())
-                    Box(
-                        Modifier.width(1.dp).fillMaxHeight(0.8f)
-                            .background(Color.White.copy(alpha = 0.2f))
-                    )
                     LyricsPane(position, Modifier.weight(1f).fillMaxHeight())
                 }
             }
@@ -301,8 +354,8 @@ fun ProgressSection() {
         }
     )
     Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
-        Text(fmt(shownPos), color = Color.White.copy(alpha = 0.7f), fontSize = spx(14f), fontFamily = Serif)
-        Text(fmt(dur), color = Color.White.copy(alpha = 0.7f), fontSize = spx(14f), fontFamily = Serif)
+        Text(fmt(shownPos), color = Color.White.copy(alpha = 0.7f), fontSize = spx(14f))
+        Text(fmt(dur), color = Color.White.copy(alpha = 0.7f), fontSize = spx(14f))
     }
 }
 
@@ -310,9 +363,9 @@ fun ProgressSection() {
 fun PlayerPane(modifier: Modifier) {
     val cover = MediaState.hiCover ?: MediaState.cover
     BoxWithConstraints(modifier, contentAlignment = Alignment.Center) {
-        val colW = px(466f)
+        val colW = px(540f)
         val coverSize = minOf(colW, maxHeight - px(330f)).coerceAtLeast(120.dp)
-        val coverShape = RoundedCornerShape(px(22f))
+        val coverShape = RoundedCornerShape(px(16f))
         Column(Modifier.width(colW), horizontalAlignment = Alignment.CenterHorizontally) {
             Box(
                 Modifier
@@ -335,15 +388,13 @@ fun PlayerPane(modifier: Modifier) {
             Spacer(Modifier.height(px(22f)))
             Text(
                 MediaState.title.ifBlank { "Nada en reproducción" },
-                color = Color.White, fontSize = spx(34f), fontWeight = FontWeight.SemiBold,
-                fontFamily = Serif,
+                color = Color.White, fontSize = spx(32f), fontWeight = FontWeight.Bold,
                 maxLines = 1, overflow = TextOverflow.Ellipsis,
                 modifier = Modifier.fillMaxWidth()
             )
             Text(
                 MediaState.artist,
-                color = Color.White.copy(alpha = 0.65f), fontSize = spx(20f),
-                fontFamily = Serif,
+                color = Color.White.copy(alpha = 0.7f), fontSize = spx(20f),
                 maxLines = 1, overflow = TextOverflow.Ellipsis,
                 modifier = Modifier.fillMaxWidth()
             )
@@ -440,14 +491,15 @@ fun LyricsPane(position: Long, modifier: Modifier) {
         }
     }
 
-    BoxWithConstraints(modifier.fadeVertical()) {
-        val pad = maxHeight / 2 - px(34f)
+    BoxWithConstraints(modifier.fadeBottom()) {
+        val topPad = maxHeight * 0.42f - px(40f)
+        val bottomPad = maxHeight * 0.6f
         if (lines.isEmpty()) {
             Text(
                 MediaState.status,
-                color = Color.White.copy(alpha = 0.7f),
-                fontSize = spx(26f),
-                fontFamily = Serif,
+                color = Color.White.copy(alpha = 0.75f),
+                fontSize = spx(28f),
+                fontWeight = FontWeight.Bold,
                 textAlign = TextAlign.Center,
                 modifier = Modifier.align(Alignment.Center).padding(px(24f))
             )
@@ -455,28 +507,40 @@ fun LyricsPane(position: Long, modifier: Modifier) {
             LazyColumn(
                 state = listState,
                 modifier = Modifier.fillMaxSize(),
-                contentPadding = PaddingValues(start = px(83f), end = px(60f), top = pad, bottom = pad)
+                contentPadding = PaddingValues(start = px(40f), end = px(60f), top = topPad, bottom = bottomPad)
             ) {
                 itemsIndexed(lines) { i, line ->
                     val synced = MediaState.synced
-                    val dist = if (!synced || current < 0) 0 else abs(i - current)
-                    val active = !synced || i == current
-                    val color by animateColorAsState(
-                        if (active) Color.White else Color.White.copy(alpha = 0.45f),
-                        label = "lyricColor"
-                    )
-                    val blurRadius by animateDpAsState(
-                        if (dist == 0) 0.dp else minOf(dist * 1.5f, 5f).dp,
-                        label = "lyricBlur"
-                    )
+                    val rel = i - maxOf(current, 0)
+                    val targetAlpha = when {
+                        !synced -> 0.9f
+                        rel < 0 -> if (rel == -1) 0.22f else 0f
+                        rel == 0 -> if (current >= 0) 1f else 0.55f
+                        else -> (0.55f - 0.12f * (rel - 1)).coerceAtLeast(0.07f)
+                    }
+                    val targetScale = if (!synced || (rel == 0 && current >= 0)) 1f else 0.92f
+                    val blurTarget = if (!synced || (rel == 0 && current >= 0)) 0.dp
+                    else minOf(abs(rel) * 1.2f, 4f).dp
+
+                    val a by animateFloatAsState(targetAlpha, animationSpec = tween(450), label = "lineAlpha")
+                    val s by animateFloatAsState(targetScale, animationSpec = tween(450), label = "lineScale")
+                    val blurRadius by animateDpAsState(blurTarget, label = "lineBlur")
+
                     Text(
                         text = line.text.ifBlank { "♪" },
-                        color = color,
-                        fontSize = spx(32f),
-                        fontWeight = FontWeight.Medium,
-                        fontFamily = Serif,
-                        lineHeight = spx(40f),
-                        modifier = Modifier.padding(vertical = px(14f)).blur(blurRadius)
+                        color = Color.White,
+                        fontSize = spx(44f),
+                        fontWeight = FontWeight.Bold,
+                        lineHeight = spx(52f),
+                        modifier = Modifier
+                            .padding(vertical = px(14f))
+                            .graphicsLayer {
+                                alpha = a
+                                scaleX = s
+                                scaleY = s
+                                transformOrigin = TransformOrigin(0f, 0.5f)
+                            }
+                            .blur(blurRadius)
                     )
                 }
             }
