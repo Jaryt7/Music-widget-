@@ -1,8 +1,11 @@
 package com.ahorasuena
 
+import android.content.Context
 import android.graphics.Bitmap
+import android.graphics.BitmapFactory
 import android.media.session.MediaController
 import android.media.session.PlaybackState
+import android.net.Uri
 import android.os.Handler
 import android.os.Looper
 import android.os.SystemClock
@@ -21,6 +24,7 @@ object MediaState {
     var title by mutableStateOf("")
     var artist by mutableStateOf("")
     var cover by mutableStateOf<Bitmap?>(null)
+    var hiCover by mutableStateOf<Bitmap?>(null)
     var isPlaying by mutableStateOf(false)
     var durationMs by mutableStateOf(0L)
     var lyrics by mutableStateOf<List<LyricLine>>(emptyList())
@@ -30,6 +34,7 @@ object MediaState {
     var controller: MediaController? = null
 
     private var lastKey = ""
+    private var coverKey = ""
     private val main = Handler(Looper.getMainLooper())
 
     fun currentPosition(): Long {
@@ -37,6 +42,75 @@ object MediaState {
         return if (s.state == PlaybackState.STATE_PLAYING) {
             s.position + ((SystemClock.elapsedRealtime() - s.lastPositionUpdateTime) * s.playbackSpeed).toLong()
         } else s.position
+    }
+
+    fun loadCover(ctx: Context, uris: List<String>, t: String, a: String) {
+        if (t.isBlank()) return
+        val key = "$t|$a"
+        if (key == coverKey) return
+        coverKey = key
+        hiCover = null
+        Thread {
+            var best: Bitmap? = null
+            for (u in uris) {
+                val b = tryLoadUri(ctx, u)
+                if (b != null) {
+                    best = b
+                    if (b.width >= 600) break
+                }
+            }
+            if (best == null || best.width < 600) {
+                val hi = fetchItunes(t, a)
+                if (hi != null) best = hi
+            }
+            val result = best
+            main.post { if (key == coverKey) hiCover = result }
+        }.start()
+    }
+
+    private fun tryLoadUri(ctx: Context, u: String): Bitmap? = try {
+        val uri = Uri.parse(u)
+        when (uri.scheme) {
+            "http", "https" -> fetchBitmap(u)
+            "content", "file", "android.resource" ->
+                ctx.contentResolver.openInputStream(uri)?.use { BitmapFactory.decodeStream(it) }
+            else -> null
+        }
+    } catch (e: Exception) {
+        null
+    }
+
+    private fun fetchItunes(t: String, a: String): Bitmap? = try {
+        val body = fetch("https://itunes.apple.com/search?media=music&entity=song&limit=5&term=${enc("$t $a")}")
+        if (body == null) {
+            null
+        } else {
+            val results = JSONObject(body).getJSONArray("results")
+            val aKey = a.lowercase().split(",", "&", " ").firstOrNull { it.length > 2 } ?: ""
+            var art: String? = null
+            for (i in 0 until results.length()) {
+                val r = results.getJSONObject(i)
+                val ra = r.optString("artistName").lowercase()
+                if (aKey.isEmpty() || ra.contains(aKey)) {
+                    art = r.optString("artworkUrl100")
+                    break
+                }
+            }
+            if (art.isNullOrBlank()) null else fetchBitmap(art.replace("100x100bb", "1000x1000bb"))
+        }
+    } catch (e: Exception) {
+        null
+    }
+
+    private fun fetchBitmap(u: String): Bitmap? {
+        val c = URL(u).openConnection() as HttpURLConnection
+        c.connectTimeout = 8000
+        c.readTimeout = 8000
+        return try {
+            if (c.responseCode == 200) BitmapFactory.decodeStream(c.inputStream) else null
+        } finally {
+            c.disconnect()
+        }
     }
 
     fun loadLyrics() {
