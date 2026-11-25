@@ -15,8 +15,9 @@ import androidx.compose.animation.core.animateDpAsState
 import androidx.compose.animation.core.tween
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
-import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.gestures.detectHorizontalDragGestures
+import androidx.compose.foundation.gestures.detectTapGestures
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.LazyListState
@@ -30,7 +31,6 @@ import androidx.compose.material.icons.filled.PlayArrow
 import androidx.compose.material.icons.filled.SkipNext
 import androidx.compose.material.icons.filled.SkipPrevious
 import androidx.compose.material.icons.filled.VolumeDown
-import androidx.compose.material.icons.filled.VolumeUp
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
@@ -41,19 +41,37 @@ import androidx.compose.ui.draw.drawWithContent
 import androidx.compose.ui.graphics.BlendMode
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.ColorFilter
+import androidx.compose.ui.graphics.ColorMatrix
 import androidx.compose.ui.graphics.CompositingStrategy
 import androidx.compose.ui.graphics.FilterQuality
 import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.graphics.graphicsLayer
+import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.layout.ContentScale
+import androidx.compose.ui.layout.onSizeChanged
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
+import androidx.compose.ui.unit.Dp
+import androidx.compose.ui.unit.IntOffset
+import androidx.compose.ui.unit.TextUnit
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import kotlinx.coroutines.delay
 import kotlin.math.abs
+import kotlin.math.roundToInt
+
+val Serif = FontFamily.Serif
+val LocalK = compositionLocalOf { 1f }
+
+@Composable
+fun px(v: Float): Dp = (v * LocalK.current).dp
+
+@Composable
+fun spx(v: Float): TextUnit = (v * LocalK.current).sp
 
 class MainActivity : ComponentActivity() {
     private var hasAccess by mutableStateOf(false)
@@ -96,27 +114,47 @@ fun Modifier.fadeVertical(): Modifier = this
         )
     }
 
+data class BgInfo(val bmp: Bitmap, val lum: Float)
+
 @Composable
 fun CoverBackground(content: @Composable BoxScope.() -> Unit) {
     val cover = MediaState.hiCover ?: MediaState.cover
-    val small = remember(cover) {
+    val info = remember(cover) {
         cover?.let {
-            val mid = Bitmap.createScaledBitmap(it, 200, 200, true)
-            Bitmap.createScaledBitmap(mid, 32, 32, true)
+            val mid = Bitmap.createScaledBitmap(it, 160, 160, true)
+            val small = Bitmap.createScaledBitmap(mid, 24, 24, true)
+            val pixels = IntArray(24 * 24)
+            small.getPixels(pixels, 0, 24, 0, 0, 24, 24)
+            var sum = 0f
+            for (c in pixels) {
+                val r = (c shr 16) and 0xFF
+                val g = (c shr 8) and 0xFF
+                val b = c and 0xFF
+                sum += (0.299f * r + 0.587f * g + 0.114f * b) / 255f
+            }
+            BgInfo(small, sum / pixels.size)
         }
     }
     Box(Modifier.fillMaxSize().background(Color.Black)) {
-        Crossfade(targetState = small, animationSpec = tween(900), label = "bg") { bmp ->
-            if (bmp != null) {
-                Image(
-                    bmp.asImageBitmap(), null,
-                    Modifier.fillMaxSize().blur(40.dp),
-                    contentScale = ContentScale.Crop,
-                    filterQuality = FilterQuality.High
-                )
+        Crossfade(targetState = info, animationSpec = tween(900), label = "bg") { bg ->
+            if (bg != null) {
+                Box(Modifier.fillMaxSize()) {
+                    Image(
+                        bitmap = bg.bmp.asImageBitmap(),
+                        contentDescription = null,
+                        modifier = Modifier.fillMaxSize().blur(40.dp),
+                        contentScale = ContentScale.Crop,
+                        colorFilter = ColorFilter.colorMatrix(ColorMatrix().apply { setToSaturation(1.5f) }),
+                        filterQuality = FilterQuality.Medium
+                    )
+                    Box(
+                        Modifier.fillMaxSize().background(
+                            Color.Black.copy(alpha = (0.08f + 0.3f * bg.lum).coerceIn(0.08f, 0.4f))
+                        )
+                    )
+                }
             }
         }
-        Box(Modifier.fillMaxSize().background(Color.Black.copy(alpha = 0.4f)))
         content()
     }
 }
@@ -150,16 +188,21 @@ fun NowPlayingScreen() {
         }
     }
     CoverBackground {
-        Row(
-            Modifier.fillMaxSize().padding(horizontal = 40.dp, vertical = 28.dp),
-            verticalAlignment = Alignment.CenterVertically
-        ) {
-            PlayerPane(position, Modifier.weight(0.42f).fillMaxHeight().padding(horizontal = 24.dp))
-            Box(
-                Modifier.width(1.dp).fillMaxHeight(0.85f)
-                    .background(Color.White.copy(alpha = 0.18f))
-            )
-            LyricsPane(position, Modifier.weight(0.58f).fillMaxHeight())
+        BoxWithConstraints(Modifier.fillMaxSize()) {
+            val k = maxWidth.value / 1920f
+            CompositionLocalProvider(LocalK provides k) {
+                Row(
+                    Modifier.fillMaxSize().padding(vertical = px(24f)),
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    PlayerPane(Modifier.weight(1f).fillMaxHeight())
+                    Box(
+                        Modifier.width(1.dp).fillMaxHeight(0.8f)
+                            .background(Color.White.copy(alpha = 0.2f))
+                    )
+                    LyricsPane(position, Modifier.weight(1f).fillMaxHeight())
+                }
+            }
         }
     }
 }
@@ -170,92 +213,179 @@ fun fmt(ms: Long): String {
 }
 
 @Composable
-fun PlayerPane(position: Long, modifier: Modifier) {
-    val cover = MediaState.hiCover ?: MediaState.cover
-    val dur = MediaState.durationMs
-    val coverShape = RoundedCornerShape(24.dp)
-    Column(
-        modifier,
-        horizontalAlignment = Alignment.CenterHorizontally,
-        verticalArrangement = Arrangement.Center
+fun ThinSlider(
+    fraction: Float,
+    trackHeight: Dp,
+    thumbSize: Dp,
+    modifier: Modifier = Modifier,
+    onChange: (Float) -> Unit,
+    onFinish: () -> Unit
+) {
+    var widthPx by remember { mutableFloatStateOf(1f) }
+    val change by rememberUpdatedState(onChange)
+    val finish by rememberUpdatedState(onFinish)
+    val f = fraction.coerceIn(0f, 1f)
+    Box(
+        modifier
+            .height(maxOf(thumbSize, px(28f)))
+            .onSizeChanged { widthPx = it.width.toFloat().coerceAtLeast(1f) }
+            .pointerInput(Unit) {
+                detectTapGestures { o ->
+                    change((o.x / widthPx).coerceIn(0f, 1f))
+                    finish()
+                }
+            }
+            .pointerInput(Unit) {
+                detectHorizontalDragGestures(
+                    onDragEnd = { finish() },
+                    onDragCancel = { finish() }
+                ) { ch, _ ->
+                    ch.consume()
+                    change((ch.position.x / widthPx).coerceIn(0f, 1f))
+                }
+            },
+        contentAlignment = Alignment.CenterStart
     ) {
         Box(
-            Modifier
-                .weight(1f, fill = false)
-                .aspectRatio(1f)
-                .clip(coverShape)
-                .background(Color(0x22FFFFFF))
-                .border(1.dp, Color.White.copy(alpha = 0.3f), coverShape),
-            contentAlignment = Alignment.Center
-        ) {
-            if (cover != null) {
-                Image(
-                    cover.asImageBitmap(), null,
-                    Modifier.fillMaxSize(),
-                    contentScale = ContentScale.Crop,
-                    filterQuality = FilterQuality.High
-                )
-            } else {
-                Icon(Icons.Default.MusicNote, null, Modifier.size(72.dp), tint = Color.White.copy(alpha = 0.5f))
-            }
-        }
-        Spacer(Modifier.height(20.dp))
-        Text(
-            MediaState.title.ifBlank { "Nada en reproducción" },
-            color = Color.White, fontSize = 24.sp, fontWeight = FontWeight.Bold,
-            maxLines = 1, overflow = TextOverflow.Ellipsis,
-            modifier = Modifier.fillMaxWidth()
+            Modifier.fillMaxWidth().height(trackHeight)
+                .clip(RoundedCornerShape(50))
+                .background(Color.White.copy(alpha = 0.28f))
         )
-        Text(
-            MediaState.artist,
-            color = Color.White.copy(alpha = 0.65f), fontSize = 18.sp,
-            maxLines = 1, overflow = TextOverflow.Ellipsis,
-            modifier = Modifier.fillMaxWidth()
+        Box(
+            Modifier.fillMaxWidth(f).height(trackHeight)
+                .clip(RoundedCornerShape(50))
+                .background(Color.White)
         )
-        Spacer(Modifier.height(16.dp))
-        LinearProgressIndicator(
-            progress = { if (dur > 0) (position.toFloat() / dur).coerceIn(0f, 1f) else 0f },
-            modifier = Modifier.fillMaxWidth().height(4.dp).clip(RoundedCornerShape(2.dp)),
-            color = Color.White,
-            trackColor = Color.White.copy(alpha = 0.25f)
-        )
-        Row(Modifier.fillMaxWidth().padding(top = 6.dp), horizontalArrangement = Arrangement.SpaceBetween) {
-            Text(fmt(position), color = Color.White.copy(alpha = 0.65f), fontSize = 12.sp)
-            Text(fmt(dur), color = Color.White.copy(alpha = 0.65f), fontSize = 12.sp)
-        }
-        Spacer(Modifier.height(12.dp))
-        Row(horizontalArrangement = Arrangement.spacedBy(28.dp), verticalAlignment = Alignment.CenterVertically) {
-            IconButton(
-                onClick = { MediaState.controller?.transportControls?.skipToPrevious() },
-                modifier = Modifier.size(64.dp)
-            ) {
-                Icon(Icons.Default.SkipPrevious, null, Modifier.size(44.dp), tint = Color.White)
-            }
+        if (thumbSize > 0.dp) {
             Box(
                 Modifier
-                    .size(76.dp)
+                    .offset { IntOffset((widthPx * f - thumbSize.toPx() / 2f).toInt(), 0) }
+                    .size(thumbSize)
                     .clip(CircleShape)
                     .background(Color.White)
-                    .clickable {
-                        val tc = MediaState.controller?.transportControls
-                        if (MediaState.isPlaying) tc?.pause() else tc?.play()
-                    },
+            )
+        }
+    }
+}
+
+@Composable
+fun ProgressSection() {
+    val dur = MediaState.durationMs
+    var pos by remember { mutableLongStateOf(0L) }
+    var dragFrac by remember { mutableStateOf<Float?>(null) }
+
+    LaunchedEffect(Unit) {
+        while (true) {
+            if (MediaState.isPlaying) withFrameNanos { } else delay(250)
+            if (dragFrac == null) pos = MediaState.currentPosition()
+        }
+    }
+
+    val d = dragFrac
+    val frac = d ?: if (dur > 0) (pos.toFloat() / dur).coerceIn(0f, 1f) else 0f
+    val shownPos = if (d != null) (d * dur).toLong() else pos
+
+    ThinSlider(
+        fraction = frac,
+        trackHeight = px(4f),
+        thumbSize = 0.dp,
+        modifier = Modifier.fillMaxWidth(),
+        onChange = { dragFrac = it },
+        onFinish = {
+            val target = dragFrac
+            if (target != null && dur > 0) {
+                MediaState.controller?.transportControls?.seekTo((target * dur).toLong())
+                pos = (target * dur).toLong()
+            }
+            dragFrac = null
+        }
+    )
+    Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
+        Text(fmt(shownPos), color = Color.White.copy(alpha = 0.7f), fontSize = spx(14f), fontFamily = Serif)
+        Text(fmt(dur), color = Color.White.copy(alpha = 0.7f), fontSize = spx(14f), fontFamily = Serif)
+    }
+}
+
+@Composable
+fun PlayerPane(modifier: Modifier) {
+    val cover = MediaState.hiCover ?: MediaState.cover
+    BoxWithConstraints(modifier, contentAlignment = Alignment.Center) {
+        val colW = px(466f)
+        val coverSize = minOf(colW, maxHeight - px(330f)).coerceAtLeast(120.dp)
+        val coverShape = RoundedCornerShape(px(22f))
+        Column(Modifier.width(colW), horizontalAlignment = Alignment.CenterHorizontally) {
+            Box(
+                Modifier
+                    .size(coverSize)
+                    .clip(coverShape)
+                    .background(Color(0x22FFFFFF)),
                 contentAlignment = Alignment.Center
             ) {
-                Icon(
-                    if (MediaState.isPlaying) Icons.Default.Pause else Icons.Default.PlayArrow,
-                    null, Modifier.size(46.dp), tint = Color.Black
-                )
+                if (cover != null) {
+                    Image(
+                        cover.asImageBitmap(), null,
+                        Modifier.fillMaxSize(),
+                        contentScale = ContentScale.Crop,
+                        filterQuality = FilterQuality.High
+                    )
+                } else {
+                    Icon(Icons.Default.MusicNote, null, Modifier.size(px(80f)), tint = Color.White.copy(alpha = 0.5f))
+                }
             }
-            IconButton(
-                onClick = { MediaState.controller?.transportControls?.skipToNext() },
-                modifier = Modifier.size(64.dp)
+            Spacer(Modifier.height(px(22f)))
+            Text(
+                MediaState.title.ifBlank { "Nada en reproducción" },
+                color = Color.White, fontSize = spx(34f), fontWeight = FontWeight.SemiBold,
+                fontFamily = Serif,
+                maxLines = 1, overflow = TextOverflow.Ellipsis,
+                modifier = Modifier.fillMaxWidth()
+            )
+            Text(
+                MediaState.artist,
+                color = Color.White.copy(alpha = 0.65f), fontSize = spx(20f),
+                fontFamily = Serif,
+                maxLines = 1, overflow = TextOverflow.Ellipsis,
+                modifier = Modifier.fillMaxWidth()
+            )
+            Spacer(Modifier.height(px(14f)))
+            ProgressSection()
+            Spacer(Modifier.height(px(20f)))
+            Row(
+                horizontalArrangement = Arrangement.spacedBy(px(29f)),
+                verticalAlignment = Alignment.CenterVertically
             ) {
-                Icon(Icons.Default.SkipNext, null, Modifier.size(44.dp), tint = Color.White)
+                IconButton(
+                    onClick = { MediaState.controller?.transportControls?.skipToPrevious() },
+                    modifier = Modifier.size(px(48f))
+                ) {
+                    Icon(Icons.Default.SkipPrevious, null, Modifier.size(px(30f)), tint = Color.White)
+                }
+                Box(
+                    Modifier
+                        .size(px(70f))
+                        .clip(CircleShape)
+                        .background(Color.White)
+                        .clickable {
+                            val tc = MediaState.controller?.transportControls
+                            if (MediaState.isPlaying) tc?.pause() else tc?.play()
+                        },
+                    contentAlignment = Alignment.Center
+                ) {
+                    Icon(
+                        if (MediaState.isPlaying) Icons.Default.Pause else Icons.Default.PlayArrow,
+                        null, Modifier.size(px(36f)), tint = Color.Black
+                    )
+                }
+                IconButton(
+                    onClick = { MediaState.controller?.transportControls?.skipToNext() },
+                    modifier = Modifier.size(px(48f))
+                ) {
+                    Icon(Icons.Default.SkipNext, null, Modifier.size(px(30f)), tint = Color.White)
+                }
             }
+            Spacer(Modifier.height(px(16f)))
+            VolumeBar()
         }
-        Spacer(Modifier.height(8.dp))
-        VolumeBar()
     }
 }
 
@@ -275,24 +405,20 @@ fun VolumeBar() {
     }
 
     Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
-        Icon(Icons.Default.VolumeDown, null, Modifier.size(20.dp), tint = Color.White.copy(alpha = 0.7f))
-        Slider(
-            value = vol,
-            onValueChange = {
+        Icon(Icons.Default.VolumeDown, null, Modifier.size(px(22f)), tint = Color.White.copy(alpha = 0.7f))
+        ThinSlider(
+            fraction = vol / max,
+            trackHeight = px(3f),
+            thumbSize = px(16f),
+            modifier = Modifier.weight(1f).padding(start = px(14f)),
+            onChange = {
                 dragging = true
-                vol = it
-                am.setStreamVolume(AudioManager.STREAM_MUSIC, it.toInt(), 0)
+                val v = (it * max).roundToInt()
+                vol = v.toFloat()
+                am.setStreamVolume(AudioManager.STREAM_MUSIC, v, 0)
             },
-            onValueChangeFinished = { dragging = false },
-            valueRange = 0f..max.toFloat(),
-            modifier = Modifier.weight(1f).padding(horizontal = 8.dp),
-            colors = SliderDefaults.colors(
-                thumbColor = Color.White,
-                activeTrackColor = Color.White,
-                inactiveTrackColor = Color.White.copy(alpha = 0.25f)
-            )
+            onFinish = { dragging = false }
         )
-        Icon(Icons.Default.VolumeUp, null, Modifier.size(20.dp), tint = Color.White.copy(alpha = 0.7f))
     }
 }
 
@@ -315,27 +441,28 @@ fun LyricsPane(position: Long, modifier: Modifier) {
     }
 
     BoxWithConstraints(modifier.fadeVertical()) {
-        val pad = maxHeight / 2 - 40.dp
+        val pad = maxHeight / 2 - px(34f)
         if (lines.isEmpty()) {
             Text(
                 MediaState.status,
                 color = Color.White.copy(alpha = 0.7f),
-                fontSize = 20.sp,
+                fontSize = spx(26f),
+                fontFamily = Serif,
                 textAlign = TextAlign.Center,
-                modifier = Modifier.align(Alignment.Center).padding(24.dp)
+                modifier = Modifier.align(Alignment.Center).padding(px(24f))
             )
         } else {
             LazyColumn(
                 state = listState,
                 modifier = Modifier.fillMaxSize(),
-                contentPadding = PaddingValues(start = 40.dp, end = 40.dp, top = pad, bottom = pad)
+                contentPadding = PaddingValues(start = px(83f), end = px(60f), top = pad, bottom = pad)
             ) {
                 itemsIndexed(lines) { i, line ->
                     val synced = MediaState.synced
                     val dist = if (!synced || current < 0) 0 else abs(i - current)
                     val active = !synced || i == current
                     val color by animateColorAsState(
-                        if (active) Color.White else Color.White.copy(alpha = 0.4f),
+                        if (active) Color.White else Color.White.copy(alpha = 0.45f),
                         label = "lyricColor"
                     )
                     val blurRadius by animateDpAsState(
@@ -345,10 +472,11 @@ fun LyricsPane(position: Long, modifier: Modifier) {
                     Text(
                         text = line.text.ifBlank { "♪" },
                         color = color,
-                        fontSize = 32.sp,
-                        fontWeight = FontWeight.Bold,
-                        lineHeight = 40.sp,
-                        modifier = Modifier.padding(vertical = 12.dp).blur(blurRadius)
+                        fontSize = spx(32f),
+                        fontWeight = FontWeight.Medium,
+                        fontFamily = Serif,
+                        lineHeight = spx(40f),
+                        modifier = Modifier.padding(vertical = px(14f)).blur(blurRadius)
                     )
                 }
             }
