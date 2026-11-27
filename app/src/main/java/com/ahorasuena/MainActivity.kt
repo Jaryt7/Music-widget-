@@ -2,6 +2,7 @@ package com.ahorasuena
 
 import android.content.Context
 import android.content.Intent
+import android.content.SharedPreferences
 import android.graphics.Bitmap
 import android.media.AudioManager
 import android.os.Bundle
@@ -10,12 +11,8 @@ import android.view.WindowManager
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.compose.animation.animateColorAsState
-import androidx.compose.animation.core.LinearEasing
 import androidx.compose.animation.core.animateDpAsState
-import androidx.compose.animation.core.animateFloat
 import androidx.compose.animation.core.animateFloatAsState
-import androidx.compose.animation.core.infiniteRepeatable
-import androidx.compose.animation.core.rememberInfiniteTransition
 import androidx.compose.animation.core.tween
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.Image
@@ -23,16 +20,21 @@ import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.gestures.detectHorizontalDragGestures
 import androidx.compose.foundation.gestures.detectTapGestures
+import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.LazyListState
 import androidx.compose.foundation.lazy.itemsIndexed
+import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.MusicNote
 import androidx.compose.material.icons.filled.Pause
 import androidx.compose.material.icons.filled.PlayArrow
+import androidx.compose.material.icons.filled.Settings
 import androidx.compose.material.icons.filled.SkipNext
 import androidx.compose.material.icons.filled.SkipPrevious
 import androidx.compose.material.icons.filled.VolumeDown
@@ -56,6 +58,7 @@ import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.layout.onSizeChanged
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
@@ -80,12 +83,73 @@ fun px(v: Float): Dp = (v * LocalK.current).dp
 @Composable
 fun spx(v: Float): TextUnit = (v * LocalK.current).sp
 
+object AppPrefs {
+    var theme by mutableStateOf("cover")
+    var font by mutableStateOf("sans")
+    var lyricSize by mutableStateOf(1)
+    var bgSpeed by mutableStateOf(2)
+    var lyricBlur by mutableStateOf(true)
+
+    private var sp: SharedPreferences? = null
+
+    fun load(ctx: Context) {
+        val p = ctx.getSharedPreferences("ahora_suena", Context.MODE_PRIVATE)
+        sp = p
+        theme = p.getString("theme", "cover") ?: "cover"
+        font = p.getString("font", "sans") ?: "sans"
+        lyricSize = p.getInt("lyricSize", 1)
+        bgSpeed = p.getInt("bgSpeed", 2)
+        lyricBlur = p.getBoolean("lyricBlur", true)
+    }
+
+    fun save() {
+        sp?.edit()
+            ?.putString("theme", theme)
+            ?.putString("font", font)
+            ?.putInt("lyricSize", lyricSize)
+            ?.putInt("bgSpeed", bgSpeed)
+            ?.putBoolean("lyricBlur", lyricBlur)
+            ?.apply()
+    }
+}
+
+data class ThemeDef(val id: String, val label: String, val base: Color?, val blobs: List<Color>?)
+
+val THEMES = listOf(
+    ThemeDef("cover", "Portada", null, null),
+    ThemeDef(
+        "black", "Negro", Color(0xFF000000),
+        listOf(Color(0xFF1C1C1C), Color(0xFF0E0E0E), Color(0xFF000000), Color(0xFF262626), Color(0xFF121212))
+    ),
+    ThemeDef(
+        "red", "Rojo", Color(0xFF1A0003),
+        listOf(Color(0xFFD50A2B), Color(0xFF7A0010), Color(0xFF000000), Color(0xFFFF4D4D), Color(0xFF4A0008))
+    ),
+    ThemeDef(
+        "blue", "Azul", Color(0xFF020A24),
+        listOf(Color(0xFF1E3CFF), Color(0xFF0B1E7A), Color(0xFF000000), Color(0xFF4D8BFF), Color(0xFF081250))
+    ),
+    ThemeDef(
+        "purple", "Morado", Color(0xFF12002B),
+        listOf(Color(0xFF8A2BFF), Color(0xFF45107A), Color(0xFF000000), Color(0xFFC77DFF), Color(0xFF2A0A55))
+    ),
+    ThemeDef(
+        "green", "Verde", Color(0xFF011A0C),
+        listOf(Color(0xFF1DB954), Color(0xFF0B5D2A), Color(0xFF000000), Color(0xFF5BE38F), Color(0xFF063D1C))
+    ),
+    ThemeDef(
+        "pink", "Rosa", Color(0xFF2A0014),
+        listOf(Color(0xFFFF3D8B), Color(0xFF8A1450), Color(0xFF000000), Color(0xFFFF8FBF), Color(0xFF4A0A2B))
+    )
+)
+
 class MainActivity : ComponentActivity() {
     private var hasAccess by mutableStateOf(false)
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         window.addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
+        AppPrefs.load(applicationContext)
         setContent {
             MaterialTheme(colorScheme = darkColorScheme()) {
                 if (hasAccess) {
@@ -175,7 +239,11 @@ fun paletteFrom(src: Bitmap): Palette {
 @Composable
 fun CoverBackground(content: @Composable BoxScope.() -> Unit) {
     val cover = MediaState.hiCover ?: MediaState.cover
-    val palette = remember(cover) { cover?.let { paletteFrom(it) } }
+    val coverPalette = remember(cover) { cover?.let { paletteFrom(it) } }
+    val def = THEMES.firstOrNull { it.id == AppPrefs.theme }
+    val fixedBase = def?.base
+    val fixedBlobs = def?.blobs
+    val palette = if (fixedBase != null && fixedBlobs != null) Palette(fixedBase, fixedBlobs) else coverPalette
 
     val spec = tween<Color>(1500)
     val base by animateColorAsState(palette?.base ?: Color(0xFF111111), spec, label = "base")
@@ -185,13 +253,27 @@ fun CoverBackground(content: @Composable BoxScope.() -> Unit) {
     val c3 by animateColorAsState(palette?.blobs?.get(3) ?: Color(0xFF222222), spec, label = "c3")
     val c4 by animateColorAsState(palette?.blobs?.get(4) ?: Color(0xFF222222), spec, label = "c4")
 
-    val infinite = rememberInfiniteTransition(label = "bgMotion")
-    val phase by infinite.animateFloat(
-        initialValue = 0f,
-        targetValue = (2 * PI).toFloat(),
-        animationSpec = infiniteRepeatable(tween(32000, easing = LinearEasing)),
-        label = "phase"
-    )
+    val speed = AppPrefs.bgSpeed
+    var phase by remember { mutableFloatStateOf(0f) }
+    LaunchedEffect(speed) {
+        if (speed == 0) return@LaunchedEffect
+        val seconds = when (speed) {
+            1 -> 60f
+            3 -> 16f
+            else -> 32f
+        }
+        val full = (2 * PI).toFloat()
+        var last = 0L
+        while (true) {
+            withFrameNanos { t ->
+                if (last != 0L) {
+                    val dt = (t - last) / 1_000_000_000f
+                    phase = (phase + dt / seconds * full) % full
+                }
+                last = t
+            }
+        }
+    }
 
     Box(Modifier.fillMaxSize().background(Color.Black)) {
         Canvas(Modifier.fillMaxSize()) {
@@ -247,25 +329,174 @@ fun AccessScreen(onOpen: () -> Unit) {
 @Composable
 fun NowPlayingScreen() {
     var position by remember { mutableLongStateOf(0L) }
+    var showSettings by remember { mutableStateOf(false) }
     LaunchedEffect(Unit) {
         while (true) {
             position = MediaState.currentPosition()
             delay(250)
         }
     }
-    CoverBackground {
-        BoxWithConstraints(Modifier.fillMaxSize()) {
-            val k = maxWidth.value / 1920f
-            CompositionLocalProvider(LocalK provides k) {
-                Row(
-                    Modifier.fillMaxSize().padding(vertical = px(24f)),
-                    verticalAlignment = Alignment.CenterVertically
-                ) {
-                    PlayerPane(Modifier.weight(1f).fillMaxHeight())
-                    LyricsPane(position, Modifier.weight(1f).fillMaxHeight())
+    val family = if (AppPrefs.font == "serif") FontFamily.Serif else FontFamily.Default
+    CompositionLocalProvider(LocalTextStyle provides LocalTextStyle.current.copy(fontFamily = family)) {
+        CoverBackground {
+            BoxWithConstraints(Modifier.fillMaxSize()) {
+                val k = maxWidth.value / 1920f
+                CompositionLocalProvider(LocalK provides k) {
+                    Row(
+                        Modifier.fillMaxSize().padding(vertical = px(24f)),
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        PlayerPane(Modifier.weight(1f).fillMaxHeight())
+                        LyricsPane(position, Modifier.weight(1f).fillMaxHeight())
+                    }
+                    IconButton(
+                        onClick = { showSettings = true },
+                        modifier = Modifier.align(Alignment.TopEnd).padding(px(20f)).size(px(56f))
+                    ) {
+                        Icon(Icons.Default.Settings, null, Modifier.size(px(32f)), tint = Color.White.copy(alpha = 0.8f))
+                    }
+                    if (showSettings) {
+                        Box(
+                            Modifier
+                                .fillMaxSize()
+                                .background(Color.Black.copy(alpha = 0.4f))
+                                .clickable(
+                                    interactionSource = remember { MutableInteractionSource() },
+                                    indication = null
+                                ) { showSettings = false }
+                        )
+                        SettingsPanel(Modifier.align(Alignment.CenterEnd), onClose = { showSettings = false })
+                    }
                 }
             }
         }
+    }
+}
+
+@Composable
+fun SectionTitle(text: String) {
+    Spacer(Modifier.height(px(20f)))
+    Text(
+        text,
+        color = Color.White.copy(alpha = 0.6f),
+        fontSize = spx(18f),
+        fontWeight = FontWeight.SemiBold,
+        modifier = Modifier.padding(bottom = px(10f))
+    )
+}
+
+@Composable
+fun OptionChip(label: String, selected: Boolean, dot: Color? = null, onClick: () -> Unit) {
+    Row(
+        Modifier
+            .clip(RoundedCornerShape(50))
+            .background(if (selected) Color.White else Color.White.copy(alpha = 0.12f))
+            .clickable { onClick() }
+            .padding(horizontal = px(20f), vertical = px(12f)),
+        verticalAlignment = Alignment.CenterVertically
+    ) {
+        if (dot != null) {
+            Box(Modifier.size(px(14f)).clip(CircleShape).background(dot))
+            Spacer(Modifier.width(px(10f)))
+        }
+        Text(
+            label,
+            color = if (selected) Color.Black else Color.White,
+            fontSize = spx(20f),
+            fontWeight = FontWeight.SemiBold
+        )
+    }
+}
+
+@Composable
+fun OptionRow(options: List<String>, selected: Int, onSelect: (Int) -> Unit) {
+    Row(horizontalArrangement = Arrangement.spacedBy(px(12f))) {
+        options.forEachIndexed { i, label ->
+            OptionChip(label, i == selected, null) { onSelect(i) }
+        }
+    }
+}
+
+@Composable
+fun SettingsPanel(modifier: Modifier, onClose: () -> Unit) {
+    Column(
+        modifier
+            .fillMaxHeight()
+            .width(px(620f))
+            .background(Color(0xF2101010))
+            .pointerInput(Unit) { detectTapGestures { } }
+            .verticalScroll(rememberScrollState())
+            .padding(px(36f))
+    ) {
+        Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
+            Text(
+                "Ajustes",
+                color = Color.White,
+                fontSize = spx(34f),
+                fontWeight = FontWeight.Bold,
+                modifier = Modifier.weight(1f)
+            )
+            IconButton(onClick = onClose) {
+                Icon(Icons.Default.Close, null, tint = Color.White)
+            }
+        }
+
+        SectionTitle("Tema de fondo")
+        THEMES.chunked(3).forEach { rowThemes ->
+            Row(horizontalArrangement = Arrangement.spacedBy(px(12f))) {
+                rowThemes.forEach { t ->
+                    OptionChip(t.label, AppPrefs.theme == t.id, t.blobs?.getOrNull(0)) {
+                        AppPrefs.theme = t.id
+                        AppPrefs.save()
+                    }
+                }
+            }
+            Spacer(Modifier.height(px(12f)))
+        }
+
+        SectionTitle("Tipografía")
+        OptionRow(listOf("Sans", "Serif"), if (AppPrefs.font == "serif") 1 else 0) {
+            AppPrefs.font = if (it == 1) "serif" else "sans"
+            AppPrefs.save()
+        }
+
+        SectionTitle("Tamaño de la letra")
+        OptionRow(listOf("Pequeña", "Normal", "Grande"), AppPrefs.lyricSize) {
+            AppPrefs.lyricSize = it
+            AppPrefs.save()
+        }
+
+        SectionTitle("Animación del fondo")
+        OptionRow(listOf("Quieta", "Lenta", "Normal", "Rápida"), AppPrefs.bgSpeed) {
+            AppPrefs.bgSpeed = it
+            AppPrefs.save()
+        }
+
+        SectionTitle("Letra")
+        Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
+            Text(
+                "Desenfoque en las líneas",
+                color = Color.White,
+                fontSize = spx(22f),
+                modifier = Modifier.weight(1f)
+            )
+            Switch(
+                checked = AppPrefs.lyricBlur,
+                onCheckedChange = {
+                    AppPrefs.lyricBlur = it
+                    AppPrefs.save()
+                },
+                colors = SwitchDefaults.colors(
+                    checkedThumbColor = Color.Black,
+                    checkedTrackColor = Color.White,
+                    checkedBorderColor = Color.Transparent,
+                    uncheckedThumbColor = Color.White,
+                    uncheckedTrackColor = Color.White.copy(alpha = 0.2f),
+                    uncheckedBorderColor = Color.Transparent
+                )
+            )
+        }
+        Spacer(Modifier.height(px(40f)))
     }
 }
 
@@ -488,6 +719,12 @@ fun LyricsPane(position: Long, modifier: Modifier) {
     val listState = remember(lines) { LazyListState() }
     var first by remember(lines) { mutableStateOf(true) }
     val current = if (MediaState.synced) lines.indexOfLast { it.timeMs <= position + 300 } else -1
+    val sizeMul = when (AppPrefs.lyricSize) {
+        0 -> 0.85f
+        2 -> 1.2f
+        else -> 1f
+    }
+    val useBlur = AppPrefs.lyricBlur
 
     LaunchedEffect(current, lines) {
         if (lines.isEmpty()) return@LaunchedEffect
@@ -521,15 +758,15 @@ fun LyricsPane(position: Long, modifier: Modifier) {
                 itemsIndexed(lines) { i, line ->
                     val synced = MediaState.synced
                     val rel = i - maxOf(current, 0)
+                    val isActive = !synced || (rel == 0 && current >= 0)
                     val targetAlpha = when {
                         !synced -> 0.9f
                         rel < 0 -> if (rel == -1) 0.22f else 0f
                         rel == 0 -> if (current >= 0) 1f else 0.55f
                         else -> (0.55f - 0.12f * (rel - 1)).coerceAtLeast(0.07f)
                     }
-                    val targetScale = if (!synced || (rel == 0 && current >= 0)) 1f else 0.92f
-                    val blurTarget = if (!synced || (rel == 0 && current >= 0)) 0.dp
-                    else minOf(abs(rel) * 1.2f, 4f).dp
+                    val targetScale = if (isActive) 1f else 0.92f
+                    val blurTarget = if (!useBlur || isActive) 0.dp else minOf(abs(rel) * 1.2f, 4f).dp
 
                     val a by animateFloatAsState(targetAlpha, animationSpec = tween(450), label = "lineAlpha")
                     val s by animateFloatAsState(targetScale, animationSpec = tween(450), label = "lineScale")
@@ -538,9 +775,9 @@ fun LyricsPane(position: Long, modifier: Modifier) {
                     Text(
                         text = line.text.ifBlank { "♪" },
                         color = Color.White,
-                        fontSize = spx(44f),
+                        fontSize = spx(44f * sizeMul),
                         fontWeight = FontWeight.Bold,
-                        lineHeight = spx(52f),
+                        lineHeight = spx(52f * sizeMul),
                         modifier = Modifier
                             .padding(vertical = px(14f))
                             .graphicsLayer {
